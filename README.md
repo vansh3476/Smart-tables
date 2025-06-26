@@ -1,6 +1,10 @@
-![image](https://github.com/user-attachments/assets/c8e2261f-f718-4abb-b6c0-8ac303f5bd3f)
 
-# Smart Table - React Implementation
+
+# Smart Table 
+
+https://github.com/user-attachments/assets/667b5476-61b0-432b-9b12-6968a3bcc6f2
+
+- React Implementation
 
 A sophisticated table component built with React that supports live calculations, formula evaluation, and real-time updates.
 
