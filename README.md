@@ -1,4 +1,9 @@
-# Smart Table - Excel-Style Spreadsheet
+https://github.com/user-attachments/assets/978f2654-e4bc-4dcb-9f63-2bd753a76a6b
+
+
+# Smart Table -
+
+ Excel-Style Spreadsheet
 
 A dynamic, interactive spreadsheet component built with React that supports Excel-like formulas, cell references, and live calculations.
 
