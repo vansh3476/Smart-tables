@@ -1,115 +1,127 @@
 "use client"
+import { useState, useCallback } from "react"
 
-import { useState, useEffect, useCallback } from "react"
+const getColumnLetter = (index) => {
+  return String.fromCharCode(65 + index)
+}
 
-// Simple chevron icons as SVG components
-const ChevronUp = () => (
-  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-  </svg>
-)
+export default function SmartTable() {
+  const [numRows, setNumRows] = useState(3)
+  const [numCols, setNumCols] = useState(4)
+  const [columnTypes, setColumnTypes] = useState(["text", "text", "number", "number"])
+  const [data, setData] = useState(() => {
+    const initialData = {}
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 4; col++) {
+        const cellId = `${getColumnLetter(col)}${row + 1}`
+        initialData[cellId] = { value: "", displayValue: "", isFormula: false }
+      }
+    }
+    return initialData
+  })
 
-const ChevronDown = () => (
-  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-  </svg>
-)
-
-export default function SmartTable({ columns, initialData }) {
-  const [data, setData] = useState(initialData)
   const [editingCell, setEditingCell] = useState(null)
   const [editValue, setEditValue] = useState("")
   const [errors, setErrors] = useState({})
-    const [sortConfig, setSortConfig] = useState({ key: null, direction: null })
 
-  const evaluateFormula = useCallback(
-    (formula, rowData) => {
-      try {
-        let expression = formula
+  const evaluateFormula = useCallback((formula, currentCellId, dataToUse) => {
+    try {
+      let expression = formula.substring(1)
 
-        columns.forEach((col) => {
-          if (col.type === "number") {
-            const value = rowData[col.key] || 0
-            const regex = new RegExp(`\\b${col.key}\\b`, "g")
-            expression = expression.replace(regex, value.toString())
+      const cellRefs = expression.match(/[A-Z]\d+/g) || []
+
+      const visited = new Set()
+      const checkCircular = (cellId, path = new Set()) => {
+        if (path.has(cellId)) return true
+        if (visited.has(cellId)) return false
+
+        visited.add(cellId)
+        path.add(cellId)
+
+        const cellData = dataToUse[cellId]
+        if (cellData && cellData.isFormula) {
+          const refs = cellData.value.match(/[A-Z]\d+/g) || []
+          for (const ref of refs) {
+            if (checkCircular(ref, new Set(path))) return true
           }
-        })
-
-        if (!/^[\d+\-*/().\s]+$/.test(expression)) {
-          throw new Error("Invalid formula")
         }
 
-        const result = Function('"use strict"; return (' + expression + ")")()
-
-        if (isNaN(result) || !isFinite(result)) {
-          throw new Error("Invalid calculation")
-        }
-
-        return Number.parseFloat(result.toFixed(2))
-      } catch (error) {
-        console.error("Formula evaluation error:", error)
-        throw new Error("Formula error: " + error.message)
+        path.delete(cellId)
+        return false
       }
-    },
-    [columns],
-  )
+
+      if (checkCircular(currentCellId)) {
+        throw new Error("Circular reference detected")
+      }
+
+      for (const cellRef of cellRefs) {
+        const cellData = dataToUse[cellRef]
+        let cellValue = 0
+
+        if (cellData) {
+          if (cellData.isFormula) {
+            cellValue = evaluateFormula(cellData.value, cellRef, dataToUse)
+          } else {
+            cellValue = Number.parseFloat(cellData.value) || 0
+          }
+        }
+
+        expression = expression.replace(new RegExp(`\\b${cellRef}\\b`, "g"), cellValue.toString())
+      }
+
+      if (!/^[\d+\-*/().\s]+$/.test(expression)) {
+        throw new Error("Invalid formula")
+      }
+
+      const result = Function('"use strict"; return (' + expression + ")")()
+
+      if (isNaN(result) || !isFinite(result)) {
+        throw new Error("Invalid calculation")
+      }
+
+      return Number.parseFloat(result.toFixed(2))
+    } catch (error) {
+      throw new Error(error.message || "Formula error")
+    }
+  }, [])
 
   const recalculateFormulas = useCallback(
-    (newData) => {
+    (dataToRecalculate) => {
+      const newData = { ...dataToRecalculate }
+      const newErrors = {}
 
-      const updatedData = newData.map((row, index) => {
-        const updatedRow = { ...row }
-
-        const formulaColumns = columns.filter((col) => col.formula)
-
-        for (let pass = 0; pass < 5; pass++) {
-          let hasChanges = false
-
-          formulaColumns.forEach((col) => {
-            try {
-              const oldValue = updatedRow[col.key]
-              const newValue = evaluateFormula(col.formula, updatedRow)
-
-              if (oldValue !== newValue) {
-                updatedRow[col.key] = newValue
-                hasChanges = true
-              }
-
-              const errorKey = `${index}-${col.key}`
-              setErrors((prev) => {
-                const newErrors = { ...prev }
-                delete newErrors[errorKey]
-                return newErrors
-              })
-            } catch (error) {
-              console.error(`Error calculating ${col.key}:`, error)
-              const errorKey = `${index}-${col.key}`
-              setErrors((prev) => ({ ...prev, [errorKey]: error.message }))
-              updatedRow[col.key] = 0
+      Object.keys(newData).forEach((cellId) => {
+        const cellData = newData[cellId]
+        if (cellData && cellData.isFormula) {
+          try {
+            const result = evaluateFormula(cellData.value, cellId, newData)
+            newData[cellId] = {
+              ...cellData,
+              displayValue: result.toString(),
+              isError:false
             }
-          })
-
-          if (!hasChanges) break
+            delete newErrors[cellId]
+          } catch (error) {
+            newData[cellId] = {
+              ...cellData,
+              displayValue: cellData.value,
+              isError:true
+            }
+            newErrors[cellId] = error.message
+          }
         }
-
-        return updatedRow
       })
 
-      return updatedData
+      setErrors(newErrors)
+      return newData
     },
-    [columns, evaluateFormula],
+    [evaluateFormula],
   )
 
-  useEffect(() => {
-    setData((prevData) => recalculateFormulas(prevData))
-  }, [recalculateFormulas])
-
-  const handleCellClick = (rowIndex, columnKey, currentValue) => {
-    const column = columns.find((col) => col.key === columnKey)
-    if (column && !column.formula) {
-      setEditingCell(`${rowIndex}-${columnKey}`)
-      setEditValue(currentValue?.toString() || "")
-    }
+  const handleCellClick = (cellId) => {
+    setEditingCell(cellId)
+    const cellData = data[cellId] || { value: "", displayValue: "", isFormula: false }
+    setEditValue(cellData.value)
   }
 
   const handleCellChange = (e) => {
@@ -118,22 +130,22 @@ export default function SmartTable({ columns, initialData }) {
 
   const handleCellBlur = () => {
     if (editingCell) {
-      const [rowIndex, columnKey] = editingCell.split("-")
-      const column = columns.find((col) => col.key === columnKey)
 
-      let newValue = editValue
-      if (column.type === "number") {
-        newValue = Number.parseFloat(editValue) || 0
+      const isFormula = editValue.startsWith("=")
+      const newData = { ...data }
+
+      newData[editingCell] = {
+        value: editValue,
+        displayValue: isFormula ? editValue : editValue, 
+        isFormula: isFormula,
       }
 
-      const newData = [...data]
-      newData[Number.parseInt(rowIndex)][columnKey] = newValue
+      const finalData = recalculateFormulas(newData)
 
-      const recalculatedData = recalculateFormulas(newData)
-      setData(recalculatedData)
-
+      setData(finalData)
       setEditingCell(null)
       setEditValue("")
+
     }
   }
 
@@ -147,131 +159,228 @@ export default function SmartTable({ columns, initialData }) {
     }
   }
 
-   const sortData = useCallback(
-    (data, key, direction) => {
-      const column = columns.find((col) => col.key === key)
+  const addRow = () => {
+    if (numRows < 10) {
+      const newRowIndex = numRows
+      const newData = { ...data }
 
-      return [...data].sort((a, b) => {
-        let aVal = a[key]
-        let bVal = b[key]
-
-        if (column.type === "number") {
-          aVal = Number(aVal) || 0
-          bVal = Number(bVal) || 0
-        } else {
-          aVal = String(aVal).toLowerCase()
-          bVal = String(bVal).toLowerCase()
-        }
-
-        if (aVal < bVal) {
-          return direction === "asc" ? -1 : 1
-        }
-        if (aVal > bVal) {
-          return direction === "asc" ? 1 : -1
-        }
-        return 0
-      })
-    },
-    [columns],
-  )
-
-  const handleSort = (columnKey) => {
-    let direction = "asc"
-
-    if (sortConfig.key === columnKey) {
-      if (sortConfig.direction === "asc") {
-        direction = "desc"
-      } else if (sortConfig.direction === "desc") {
-        direction = null // Remove sorting
-      } else {
-        direction = "asc"
+      // Add cells for the new row
+      for (let col = 0; col < numCols; col++) {
+        const cellId = `${getColumnLetter(col)}${newRowIndex + 1}`
+        newData[cellId] = { value: "", displayValue: "", isFormula: false }
       }
-    }
 
-    setSortConfig({ key: columnKey, direction })
-
-    if (direction) {
-      const sortedData = sortData(data, columnKey, direction)
-      setData(sortedData)
-    } else {
-      const recalculatedData = recalculateFormulas(initialData)
-      setData(recalculatedData)
+      setData(newData)
+      setNumRows(numRows + 1)
     }
   }
 
-  const getCellContent = (row, column, rowIndex) => {
-    const cellKey = `${rowIndex}-${column.key}`
-    const isEditing = editingCell === cellKey
-    const hasError = errors[cellKey]
-    const value = row[column.key]
+  const removeRow = () => {
+    if (numRows > 1) {
+      const newData = { ...data }
+
+      // Remove cells from the last row
+      for (let col = 0; col < numCols; col++) {
+        const cellId = `${getColumnLetter(col)}${numRows}`
+        delete newData[cellId]
+      }
+
+      setData(newData)
+      setNumRows(numRows - 1)
+    }
+  }
+
+  const addColumn = () => {
+    if (numCols < 10) {
+      const newColIndex = numCols
+      const newData = { ...data }
+      const newColumnTypes = [...columnTypes, "number"]
+
+      // Add cells for the new column
+      for (let row = 0; row < numRows; row++) {
+        const cellId = `${getColumnLetter(newColIndex)}${row + 1}`
+        newData[cellId] = { value: "", displayValue: "", isFormula: false }
+      }
+
+      setData(newData)
+      setColumnTypes(newColumnTypes)
+      setNumCols(numCols + 1)
+    }
+  }
+
+  const removeColumn = () => {
+    if (numCols > 1) {
+      const newData = { ...data }
+      const newColumnTypes = columnTypes.slice(0, -1)
+
+      // Remove cells from the last column
+      for (let row = 0; row < numRows; row++) {
+        const cellId = `${getColumnLetter(numCols - 1)}${row + 1}`
+        delete newData[cellId]
+      }
+
+      setData(newData)
+      setColumnTypes(newColumnTypes)
+      setNumCols(numCols - 1)
+    }
+  }
+
+  const toggleColumnType = (colIndex) => {
+    const newColumnTypes = [...columnTypes]
+    newColumnTypes[colIndex] = newColumnTypes[colIndex] === "text" ? "number" : "text"
+    setColumnTypes(newColumnTypes)
+  }
+
+  const getCellContent = (cellId) => {
+    const cellData = data[cellId] || { value: "", displayValue: "", isFormula: false }
+    const isEditing = editingCell === cellId
+    const hasError = errors[cellId]
 
     if (isEditing) {
       return (
         <input
-          type={column.type === "number" ? "number" : "text"}
-          step="any"
+          type="text"
           value={editValue}
           onChange={handleCellChange}
           onBlur={handleCellBlur}
           onKeyDown={handleKeyPress}
-          className="w-full px-3 py-2 border-0 outline-none bg-blue-50 focus:bg-blue-100 rounded"
+          className="w-full h-full px-2 py-1 border-2 border-blue-500 outline-none bg-white text-sm"
           autoFocus
+          placeholder="Enter value or =formula"
         />
       )
     }
 
+    const displayText = hasError ? cellData.value : cellData.isFormula ? cellData.displayValue : cellData.value || ""
+
     return (
       <div
-        className={`px-3 py-2 cursor-pointer hover:bg-gray-50 rounded transition-colors ${
+        className={`w-full h-full px-2 py-1 cursor-pointer hover:bg-blue-50 text-sm flex items-center ${
           hasError ? "bg-red-50 text-red-600" : ""
-        } ${column.formula ? "bg-gray-50 cursor-default" : ""}`}
-        onClick={() => handleCellClick(rowIndex, column.key, value)}
-        title={hasError ? hasError : column.formula ? `Formula: ${column.formula}` : ""}
+        } ${cellData.isFormula ? "bg-green-50" : ""}`}
+        onClick={() => handleCellClick(cellId)}
+        title={
+          hasError
+            ? hasError
+            : cellData.isFormula
+              ? `Formula: ${cellData.value} = ${cellData.displayValue}`
+              : "Click to edit"
+        }
       >
-        {hasError ? "Error" : column.type === "number" && typeof value === "number" ? value.toFixed(2) : value}
+        {displayText}
       </div>
     )
   }
 
   return (
-    <div className="w-full">
-      {errors.circular && (
-        <div className="mb-4 p-3 bg-red-100 border border-red-300 text-red-700 rounded">{errors.circular}</div>
-      )}
+    <div className="w-full space-y-4">
+      {/* Controls */}
+      <div className="flex flex-wrap gap-4 p-4 bg-gray-50 rounded-lg">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">Rows:</span>
+          <button
+            onClick={removeRow}
+            disabled={numRows <= 1}
+            className="px-2 py-1 text-xs bg-red-500 text-white rounded disabled:bg-gray-300"
+          >
+            -
+          </button>
+          <span className="text-sm">{numRows}</span>
+          <button
+            onClick={addRow}
+            disabled={numRows >= 10}
+            className="px-2 py-1 text-xs bg-green-500 text-white rounded disabled:bg-gray-300"
+          >
+            +
+          </button>
+        </div>
 
-      <div className="overflow-hidden border border-gray-200 rounded-lg">
-        <table className="w-full">
-          <thead className="bg-gray-50">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">Columns:</span>
+          <button
+            onClick={removeColumn}
+            disabled={numCols <= 1}
+            className="px-2 py-1 text-xs bg-red-500 text-white rounded disabled:bg-gray-300"
+          >
+            -
+          </button>
+          <span className="text-sm">{numCols}</span>
+          <button
+            onClick={addColumn}
+            disabled={numCols >= 10}
+            className="px-2 py-1 text-xs bg-green-500 text-white rounded disabled:bg-gray-300"
+          >
+            +
+          </button>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="border border-gray-300 rounded-lg overflow-hidden">
+        <table className="w-full border-collapse">
+          <thead>
             <tr>
-              {columns.map((column) => (
+              <th className="w-12 h-10 bg-gray-200 border border-gray-300"></th>
+              {Array.from({ length: numCols }, (_, colIndex) => (
                 <th
-                  key={column.key}
-                  className="px-3 py-3 text-left text-sm font-medium text-gray-900 border-b border-gray-200 whitespace-nowrap"
-                  onClick={() => handleSort(column.key)}
+                  key={colIndex}
+                  className="min-w-32 h-10 bg-gray-200 border border-gray-300 text-center text-sm font-medium cursor-pointer hover:bg-gray-300"
+                  onClick={() => toggleColumnType(colIndex)}
+                  title={`Click to toggle type (currently: ${columnTypes[colIndex]})`}
                 >
-                  <div className="flex items-center justify-between">
-                    <span>{column.label}</span>
-                    <div className="flex flex-col ml-2 text-gray-400">
-                      <ChevronUp />
-                      <ChevronDown />
-                    </div>
+                  <div className="flex items-center justify-center gap-1">
+                    <span>{getColumnLetter(colIndex)}</span>
+                    <span className="text-xs text-gray-600">({columnTypes[colIndex] === "text" ? "T" : "#"})</span>
                   </div>
                 </th>
               ))}
             </tr>
           </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {data.map((row, rowIndex) => (
-              <tr key={row.id} className="hover:bg-gray-50">
-                {columns.map((column) => (
-                  <td key={column.key} className="text-sm text-gray-900 border-b border-gray-100 whitespace-nowrap">
-                    {getCellContent(row, column, rowIndex)}
-                  </td>
-                ))}
+          <tbody>
+            {Array.from({ length: numRows }, (_, rowIndex) => (
+              <tr key={rowIndex}>
+                <td className="w-12 h-10 bg-gray-200 border border-gray-300 text-center text-sm font-medium">
+                  {rowIndex + 1}
+                </td>
+                {Array.from({ length: numCols }, (_, colIndex) => {
+                  const cellId = `${getColumnLetter(colIndex)}${rowIndex + 1}`
+                  return (
+                    <td key={cellId} className="min-w-32 h-10 border border-gray-300 p-0">
+                      {getCellContent(cellId)}
+                    </td>
+                  )
+                })}
               </tr>
             ))}
           </tbody>
         </table>
+      </div>
+
+      <div className="p-4 bg-blue-50 rounded-lg">
+        <h3 className="font-semibold text-blue-900 mb-2">How to Use:</h3>
+        <ul className="text-blue-800 text-sm space-y-1">
+          <li>
+            • <strong>Click any cell</strong> to edit its value
+          </li>
+          <li>
+            • <strong>Enter formulas</strong> starting with = (e.g., =A1+B1)
+          </li>
+          <li>
+            • <strong>Use cell references</strong> like A1, B2, C3, etc.
+          </li>
+          <li>
+            • <strong>Press Enter</strong> to save, Escape to cancel
+          </li>
+          <li>
+            • <strong>Click column headers</strong> to toggle between Text (T) and Number (#)
+          </li>
+          <li>
+            • <strong>Formula cells</strong> have a green background
+          </li>
+          <li>
+            • <strong>Error cells</strong> show in red with message on hover
+          </li>
+        </ul>
       </div>
     </div>
   )
